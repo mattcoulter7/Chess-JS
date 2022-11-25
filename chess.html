@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <style>
+            .game {
+                border:1px solid black;
+            }
+
+            .promotion {
+                display:none;
+                border:1px solid black;
+            }
+        </style>
+    </head>
+<body>
+
+<canvas id="game" class="game" width="800" height="800"></canvas>
+<canvas id="promotion" class="promotion" width="60" height="240"></canvas>
+
+<script>
+function rand_num(min, max) {
+    min = Math.ceil(min);
+    max = Math.floor(max);
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function is_even(num)
+{
+    return num % 2 == 0
+}
+
+function copy_arr(arr)
+{
+    var copy = []
+    arr.forEach(function(item){
+        copy.push(item)
+    })
+    return copy
+}
+
+class dir
+{
+    constructor(type,dir)
+    {
+        this.type = type;
+        this.dir = dir
+    }
+
+    draw = function(pos)
+    {
+        var img = new Image();
+        img.src = this.dir;
+        img.onload = function() {
+            panelctx.drawImage(img, pos.x, pos.y);
+        };
+    }
+}
+
+class promotion
+{
+    constructor(pawn)
+    {
+        this.pawn = pawn
+
+        if (this.pawn.color == "white")
+            this.images = [
+                new dir("bishop","Chess_blt60.png"),
+                new dir("knight","Chess_nlt60.png"),
+                new dir("queen","Chess_qlt60.png"),
+                new dir("rook","Chess_rlt60.png"),
+            ] //this is the order that they are selected
+        else
+            this.images = [
+                new dir("bishop","Chess_bdt60.png"),
+                new dir("knight","Chess_ndt60.png"),
+                new dir("queen","Chess_qdt60.png"),
+                new dir("rook","Chess_rdt60.png"),
+            ] //this is the order that they are selected
+
+        this.img_height = panelc.height / this.images.length
+
+        var thisObj = this
+
+        panelc.onclick = function(event) {
+            var x = event.offsetX
+            var y = event.offsetY
+            var pos = new point2D(x,y)
+            thisObj.select(pos)
+            thisObj.hide()
+        }
+    }
+
+    show = function()
+    {
+        var height = this.img_height
+        this.images.forEach(function(img,index){
+            img.draw(new point2D(0,index * height))
+        })
+        // draw the overlay
+        panelc.style.display = "inline-block"
+    }
+
+    hide = function()
+    {
+        // hide the overlay
+        panelc.style.display = ""
+    }
+
+    select = function(pos)
+    {
+        // on click of the overlay
+        var index = Math.floor(pos.y / this.img_height)
+        var pieceType = this.images[index].type
+        this.pawn.promoteTo(pieceType)
+		game.flip()
+        game.draw()
+    }
+}
+
+class point2D
+{
+    constructor(x = 0,y = 0)
+    {
+        this.x = x
+        this.y = y
+    }
+
+    sum = function(point)
+    {
+        return new point2D(this.x + point.x,this.y + point.y)
+    }
+
+    multiply = function(value)
+    {
+        return new point2D(this.x * value,this.y * value)
+    }
+
+    equals = function(point)
+    {
+        return (this.x == point.x && this.y == point.y)
+    }
+
+    copy = function()
+    {
+        return new point2D(this.x,this.y)
+    }
+}
+
+class history
+{
+	constructor(start,end,piece,preBoard,postBoard)
+	{
+		this.start = start
+		this.end = end
+		this.piece = piece
+		this.preBoard = preBoard
+		this.postBoard = postBoard
+	}
+}
+
+class move
+{
+	constructor(piece,end,board)
+	{
+		this.piece = piece
+		this.end = end
+		this.board = board
+        this.promotion = null
+	}
+}
+
+class pawn
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = history
+        if (color == "white")
+            this.image_dir = "Chess_plt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_pdt60.png";
+        //this.promotion = new promotion(this)
+        this.promotionRank = this.color == "white" ? 0 : 7
+        this.score = 1
+	}
+	
+    copy = function(state)
+    {
+        return new pawn(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+
+        var available_moves = []
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+		if (available_moves.length > 0)
+			available_moves = available_moves.concat(this.getStartingMoves(board,turn)) // implies there is no pawn in front
+        // Capture Moves
+        available_moves = available_moves.concat(this.getCaptureMoves(board,turn))
+        // En-Passante Moves
+        available_moves = available_moves.concat(this.getEnPassanteMoves(board,turn))
+
+		return available_moves
+    }
+
+    getCaptureMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+
+        var facing = -1
+        if (this.color == "white")
+            facing = 1
+
+        var capture_moves = [new point2D(-1,-1 * facing),new point2D(1,-1 * facing)]
+        var result = []
+        for (let i = 0; i < capture_moves.length; i++)
+        {
+            var capture_move = capture_moves[i]
+            var result_pos = this.pos.sum(capture_move)
+            var result_pos_obj = this.state.objAtPos(board,result_pos)
+            if (result_pos_obj == null || result_pos_obj == 0) continue;
+            if (!(result_pos_obj instanceof king) && result_pos_obj.color != this.color)
+			{
+				var outcome = this.state.getMoveState(board,this.pos,result_pos)
+                if (this.state.check(outcome).includes(this.color)) continue;
+				var moveObj = new move(this,result_pos,outcome)
+                if (result_pos.y == this.promotionRank)
+				    moveObj.promotion = new promotion(this)
+                result.push(moveObj)
+			}
+        }
+        return result
+    }
+
+    attacking = function(board = null)
+    {
+        if (board == null)
+            board = this.state.board
+        var result = []
+        var facing = -1
+        if (this.color == "white")
+            facing = 1
+        var directions = [new point2D(-1,-1 * facing),new point2D(1,-1 * facing)]
+        for (let i = 0; i < directions.length; i++)
+        {
+            var dir = directions[i]
+            var result_pos = this.pos.sum(dir)
+            var outcome = this.state.getMoveState(board,this.pos,result_pos)
+            var moveObj = new move(this,result_pos,outcome)
+            result.push(moveObj)
+        }
+        return result
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+
+        var facing = -1
+        if (this.color == "white")
+            facing = 1
+
+        var normal_move = new point2D(0,-1 * facing)
+        var result = []
+        var result_pos = this.pos.sum(normal_move)
+        var result_pos_obj = this.state.objAtPos(board,result_pos)
+        if (result_pos_obj == null) return result
+        if (result_pos_obj == 0)
+		{
+			var outcome = this.state.getMoveState(board,this.pos,result_pos)
+            if (this.state.check(outcome).includes(this.color)) return result;
+			var moveObj = new move(this,result_pos,outcome)
+            if (result_pos.y == this.promotionRank)
+                moveObj.promotion = new promotion(this)
+			result.push(moveObj)
+		}
+        return result
+    }
+
+    getStartingMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+        var facing = -1
+        if (this.color == "white")
+            facing = 1
+
+        var starting_move = new point2D(0,-2 * facing)
+        var result = []
+        if (this.history.length == 0)
+        {
+            var result_pos = this.pos.sum(starting_move)
+            var result_pos_obj = this.state.objAtPos(board,result_pos)
+            if (result_pos_obj == null) return result
+            if (result_pos_obj == 0)
+			{
+				var outcome = this.state.getMoveState(board,this.pos,result_pos)
+                if (this.state.check(outcome).includes(this.color)) return result;
+				var moveObj = new move(this,result_pos,outcome)
+				result.push(moveObj)
+			}
+        }
+        return result
+    }
+
+    getEnPassanteMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+        var facing = -1
+        if (this.color == "white")
+            facing = 1
+
+        var opposite_pawns = [new point2D(1,0),new point2D(-1,0)]
+        var enpassante_moves = [new point2D(1,-1 * facing),new point2D(-1,-1 * facing)]
+        var result = []
+        for (let i = 0; i < opposite_pawns.length; i++)
+        {
+            var dir = opposite_pawns[i]
+            var pawn_pos = this.pos.sum(dir)
+            var piece = this.state.objAtPos(board,pawn_pos)
+            if (piece instanceof pawn)
+			{
+                if (piece.color != this.color && piece.history.length == 1)
+				{
+					var result_pos = this.pos.sum(enpassante_moves[i])
+					var outcome = this.state.getMoveState(board,this.pos,result_pos)
+					var captureTile = result_pos.sum(new point2D(0,1 * facing))
+					outcome[captureTile.x][captureTile.y] = 0;
+                    if (this.state.check(outcome).includes(this.color)) continue;
+					var moveObj = new move(this,result_pos,outcome)
+					result.push(moveObj)
+				}
+			}
+        }
+        return result
+    }
+
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+
+    promoteTo = function(type)
+    {
+        var newObject = this;
+        if (type == "bishop")
+            newObject = new bishop(this.state,this.color,this.pos,this.history)
+        if (type == "rook")
+            newObject = new rook(this.state,this.color,this.pos,this.history)
+        if (type == "knight")
+            newObject = new knight(this.state,this.color,this.pos,this.history)
+        if (type == "queen")
+            newObject = new queen(this.state,this.color,this.pos,this.history)
+        this.state.board[this.pos.x][this.pos.y] = newObject
+    }
+}
+
+class rook
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = history
+        if (color == "white")
+            this.image_dir = "Chess_rlt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_rdt60.png";
+        this.score = 5
+	}
+	
+    copy = function(state)
+    {
+        return new rook(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+        var available_moves = []
+        
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+
+		return available_moves
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+            if (!outcome) continue;
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color || piece instanceof king)
+                {
+                    end = true
+                }
+                else if (piece instanceof pawn || piece instanceof rook || piece instanceof knight || piece instanceof bishop || piece instanceof queen)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+    }
+	
+	attacking = function(board = null)
+	{
+        if (board == null)
+            board = this.state.board
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+					result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color)
+                {
+                    end = true
+                }
+                else
+                {
+                    result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+	}
+    
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+}
+class knight
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = history
+        if (color == "white")
+            this.image_dir = "Chess_nlt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_ndt60.png";
+        this.score = 3
+	}
+
+    copy = function(state)
+    {
+        return new knight(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+	
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+        var available_moves = []
+        
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+
+		return available_moves
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        if (turn != this.color) return []
+        var potential_moves = [
+            new point2D(2,1),
+            new point2D(2,-1),
+            new point2D(-2,1),
+            new point2D(-2,-1),
+            new point2D(1,2),
+            new point2D(1,-2),
+            new point2D(-1,2),
+            new point2D(-1,-2),
+        ]
+        var result = []
+        for (let i = 0; i < potential_moves.length; i++)
+        {
+            var potential_move = potential_moves[i]
+            var result_pos = this.pos.sum(potential_move)
+            var piece = this.state.objAtPos(board,result_pos)
+            
+            if (piece == null) continue;
+            if (piece == 0 || (!(piece instanceof king) && piece.color != this.color))
+			{
+				var outcome = this.state.getMoveState(board,this.pos,result_pos)
+                if (this.state.check(outcome).includes(this.color)) continue;
+				var moveObj = new move(this,result_pos,outcome)
+				result.push(moveObj)
+			}
+        }
+        return result
+    }
+	
+	attacking = function(board = null)
+	{
+        if (board == null)
+            board = this.state.board
+        var potential_moves = [
+            new point2D(2,1),
+            new point2D(2,-1),
+            new point2D(-2,1),
+            new point2D(-2,-1),
+            new point2D(1,2),
+            new point2D(1,-2),
+            new point2D(-1,2),
+            new point2D(-1,-2),
+        ]
+        var result = []
+        for (let i = 0; i < potential_moves.length; i++)
+        {
+            var potential_move = potential_moves[i]
+            var result_pos = this.pos.sum(potential_move)
+            var piece = this.state.objAtPos(board,result_pos)
+            
+            if (piece == null) continue;
+            var outcome = this.state.getMoveState(board,this.pos,result_pos)
+            var moveObj = new move(this,result_pos,outcome)
+            result.push(moveObj)
+        }
+        return result
+	}
+    
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+}
+class bishop
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = []
+        if (color == "white")
+            this.image_dir = "Chess_blt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_bdt60.png";
+        this.score = 3
+	}
+
+    copy = function(state)
+    {
+        return new bishop(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+        var available_moves = []
+        
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+
+		return available_moves
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        var turn = this.state.turn
+        if (turn != this.color) return []
+        var directions = [new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+            if (!outcome) continue;
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color || piece instanceof king)
+                {
+                    end = true
+                }
+                else if (piece instanceof pawn || piece instanceof rook || piece instanceof knight || piece instanceof bishop || piece instanceof queen)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+    }
+	
+	attacking = function(board = null)
+	{
+        if (board == null)
+            board = this.state.board
+        var directions = [new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+					result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color)
+                {
+                    end = true
+                }
+                else
+                {
+                    result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+	}
+    
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+}
+class queen
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = history
+        if (color == "white")
+            this.image_dir = "Chess_qlt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_qdt60.png";
+        this.score = 9
+	}
+
+    copy = function(state)
+    {
+        return new queen(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+	
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+        var available_moves = []
+        
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+
+		return available_moves
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        var turn = this.state.turn
+        if (turn != this.color) return []
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1),new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+            if (!outcome) continue;
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color || piece instanceof king)
+                {
+                    end = true
+                }
+                else if (piece instanceof pawn || piece instanceof rook || piece instanceof knight || piece instanceof bishop || piece instanceof queen)
+                {
+                    if (this.state.check(outcome).includes(this.color)) {}
+                    else
+                        result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+    }
+	 
+    attacking = function(board = null)
+	{
+        if (board == null)
+            board = this.state.board
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1),new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+			var moveObj = new move(this,step,outcome)
+			
+            var end = false
+            while (!end)
+            {
+                if (piece == 0)
+                {
+					result.push(moveObj)
+                    step = step.sum(step_direction)
+                    piece = this.state.objAtPos(board,step)
+					outcome = this.state.getMoveState(board,this.pos,step)
+					moveObj = new move(this,step,outcome)
+                }
+                else if (piece == null || piece.color == this.color)
+                {
+                    end = true
+                }
+                else
+                {
+                    result.push(moveObj)
+                    end = true
+                }
+            }
+        }
+        return result
+	}
+    
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+}
+class king
+{
+	constructor(state,color,pos,history = [])
+	{
+		this.state = state
+        this.color = color
+        this.pos = pos
+        this.history = history
+        if (color == "white")
+            this.image_dir = "Chess_klt60.png";
+        else if (color == "black")
+            this.image_dir = "Chess_kdt60.png";
+        this.score = 0
+	}
+
+    copy = function(state)
+    {
+        return new king(state,this.color,this.pos.copy(),copy_arr(this.history))
+    }
+	
+	get_available_moves = function(board = null,turn = null)
+	{
+        if (board == null)
+            board = this.state.board
+        if (turn == null)
+            turn = this.state.turn
+        var available_moves = []
+        
+        // Normal Moves
+        available_moves = available_moves.concat(this.getNormalMoves(board,turn))
+
+        // Normal Moves
+        available_moves = available_moves.concat(this.getCastleMoves(board,turn))
+
+		return available_moves
+    }
+
+    getNormalMoves = function(board,turn)
+    {
+        var turn = this.state.turn
+        if (turn != this.color) return []
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1),new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var result_pos = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,result_pos)
+            if (piece == null) continue;
+            if ((piece == 0 || (!(piece instanceof king) && piece.color != this.color)))
+			{
+                var outcome = this.state.getMoveState(board,this.pos,result_pos)
+                var check = this.state.check(outcome)
+                if (check.includes(this.color)) continue;
+                var moveObj = new move(this,result_pos,outcome)
+                result.push(moveObj)
+			}
+        }
+        return result
+    }
+
+    getCastleMoves = function(board,turn)
+    {
+        var turn = this.state.turn
+        if (turn != this.color) return []
+        var result = []
+        if (this.history.length > 0) return result
+		var direction = [new point2D(-1,0),new point2D(0,1)]
+        return result
+    }
+	
+	attacking = function(board = null)
+	{
+        if (board == null)
+            board = this.state.board
+        var directions = [new point2D(1,0),new point2D(0,1),new point2D(-1,0),new point2D(0,-1),new point2D(1,1),new point2D(-1,1),new point2D(-1,-1),new point2D(1,-1)]
+        var result = []
+        for (let i = 0; i < directions.length; i++)
+        {
+            var step_direction = directions[i]
+            var step = this.pos.sum(step_direction)
+            var piece = this.state.objAtPos(board,step)
+			
+			var outcome = this.state.getMoveState(board,this.pos,step)
+			var moveObj = new move(this,step,outcome)
+			if (piece != null)
+				result.push(moveObj)
+        }
+        return result
+	}
+    
+    draw = function(pos) {
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, pos.x, pos.y);
+        };
+        img.src = this.image_dir;
+    }
+}
+
+class ai
+{
+    constructor(game,color = "black",mode = "balanced",max_moves = 10,game_count = 10)
+    {
+        this.modes = [
+            "balanced", // Greatest difference between 2 score
+            "aggressive", // Lowest enemy score
+            "defensive" // Greatest this score
+        ]
+        this.game = game
+        this.color = color
+        this.mode = mode
+        this.max_moves = max_moves
+        this.game_count = game_count
+    }
+
+    get_all_available_moves = function(state)
+    {
+        var all_possible_moves = []
+        for (let i = 0; i < state.tile_count; i++)
+        {
+            for (let j = 0; j < state.tile_count; j++)
+            {
+                var tile = new point2D(i,j)
+                var piece = state.objAtPos(state.board,tile)
+                if (piece == 0) continue;
+                if (piece.color != state.turn) continue;
+                var moves = piece.get_available_moves(state.board,state.turn)
+                all_possible_moves = all_possible_moves.concat(moves)
+            }
+        }
+        return all_possible_moves
+    }
+
+    random_move = function(state)
+    {
+        var all_possible_moves = this.get_all_available_moves(state)
+        if (all_possible_moves.length == 0) return false
+        var index = rand_num(0,all_possible_moves.length - 1)
+        var move = all_possible_moves[index]
+        state.move(move)
+        return true
+    }
+
+    random_game = function()
+    {
+        var stateCopy = this.game.state.copy_state(true)
+        var valid = true
+        var iterator = 0
+        while (valid && iterator < this.max_moves)
+        {
+            valid = this.random_move(stateCopy)
+            if (valid)
+            {
+                if (stateCopy.history.length >= 20) // check stalemate after 20 moves
+                    valid = !stateCopy.stalemate()
+                if (valid)
+                    valid = !stateCopy.checkmate()
+            }
+            iterator++
+            stateCopy = stateCopy.copy_state(true)
+        }
+        return stateCopy
+    }
+
+    random_games = function()
+    {
+        var games = []
+        for (let i = 0; i < this.game_count; i++)
+            games.push(this.random_game())
+        console.log(games)
+        return games
+    }
+
+    get_best_game = function(games)
+    {
+        var bestScore = null
+        var bestGame = null
+        for (let i = 0; i < games.length;i++)
+        {
+            var game = games[i]
+            var score = this.getScore(game,this.mode)
+            if (bestScore == null || score > bestScore)
+            {
+                bestScore = score
+                bestGame = game
+            }
+        }
+        return bestGame
+    }
+
+    best_move = function(game)
+    {
+        var startIndex = this.game.state.history.length
+        var history = game.history[startIndex]
+        var nextMove = new move(history.piece,history.end,history.postBoard)
+        return nextMove
+    }
+
+    getScore = function(game)
+    {
+        var me = this.color
+        var enemy = this.color == "white" ? "black" : "white"
+
+        var gameScore = game.getScore()
+        var meScore = gameScore[me]
+        var enemyScore = gameScore[enemy]
+        var score = -1
+        if (this.mode == "balanced")
+            score = meScore - enemyScore
+        else if (this.mode == "aggressive")
+            score = enemyScore
+        else if (this.mode == "defensive")
+            score = meScore
+        return score
+    }
+
+    play_move = function(mode)
+    {
+        if (this.game.state.turn != this.color) return;
+        var games = this.random_games(10)
+        var best_game = this.get_best_game(games)
+        var move = this.best_move(best_game,"balanced")
+        console.log(move)
+        this.game.state.move(move)
+        this.game.flip()
+        this.game.draw()
+    }
+}
+
+class state
+{
+    constructor(board = false,history = [],turn = "white")
+    {
+        if (!!board)
+            this.board = board
+        else
+            this.board = this.generate_board(8)
+        this.tile_count = 8
+        this.history = history
+        this.turn = turn
+    }
+
+    copy = function(board = null,deep = false)
+    {
+		if (board == null)
+			board = this.board
+		var newBoard = this.generate_empty(board.length)
+		for (let i = 0; i < newBoard.length; i++)
+		{
+			for (let j = 0; j < newBoard.length; j++)
+			{
+                var piece = board[i][j]
+                if (piece == 0) continue;
+                if (deep)
+                {
+                    newBoard[i][j] = piece.copy(this)
+                }
+                else
+                {
+                    newBoard[i][j] = piece
+                }
+			}
+		}
+		return newBoard
+    }
+
+    copy_state = function(deep = false)
+    {
+        return new state(this.copy(null,deep),copy_arr(this.history),this.turn)
+    }
+
+    generate_board = function(count)
+    {
+		var board = this.generate_empty(count)
+        // BLACK
+        board[0][0] = new rook(this,"black",new point2D(0,0))
+        board[1][0] = new knight(this,"black",new point2D(1,0))
+        board[2][0] = new bishop(this,"black",new point2D(2,0))
+        board[3][0] = new queen(this,"black",new point2D(3,0))
+        board[4][0] = new king(this,"black",new point2D(4,0))
+        board[5][0] = new bishop(this,"black",new point2D(5,0))
+        board[6][0] = new knight(this,"black",new point2D(6,0))
+        board[7][0] = new rook(this,"black",new point2D(7,0))
+        
+        board[0][1] = new pawn(this,"black",new point2D(0,1))
+        board[1][1] = new pawn(this,"black",new point2D(1,1))
+        board[2][1] = new pawn(this,"black",new point2D(2,1))
+        board[3][1] = new pawn(this,"black",new point2D(3,1))
+        board[4][1] = new pawn(this,"black",new point2D(4,1))
+        board[5][1] = new pawn(this,"black",new point2D(5,1))
+        board[6][1] = new pawn(this,"black",new point2D(6,1))
+        board[7][1] = new pawn(this,"black",new point2D(7,1))
+
+        // WHITE
+        board[0][6] = new pawn(this,"white",new point2D(0,6))
+        board[1][6] = new pawn(this,"white",new point2D(1,6))
+        board[2][6] = new pawn(this,"white",new point2D(2,6))
+        board[3][6] = new pawn(this,"white",new point2D(3,6))
+        board[4][6] = new pawn(this,"white",new point2D(4,6))
+        board[5][6] = new pawn(this,"white",new point2D(5,6))
+        board[6][6] = new pawn(this,"white",new point2D(6,6))
+        board[7][6] = new pawn(this,"white",new point2D(7,6))
+        
+        board[0][7] = new rook(this,"white",new point2D(0,7))
+        board[1][7] = new knight(this,"white",new point2D(1,7))
+        board[2][7] = new bishop(this,"white",new point2D(2,7))
+        board[3][7] = new queen(this,"white",new point2D(3,7))
+        board[4][7] = new king(this,"white",new point2D(4,7))
+        board[5][7] = new bishop(this,"white",new point2D(5,7))
+        board[6][7] = new knight(this,"white",new point2D(6,7))
+        board[7][7] = new rook(this,"white",new point2D(7,7))
+        return board
+    }
+	
+	generate_empty = function(count)
+	{
+        var board = new Array(count)
+        for (let i = 0; i < board.length; i++)
+            board[i] = new Array(count).fill(0)
+		return board;
+	}
+
+    validPos = function(pos)
+    {
+        return (pos.x >= 0 && pos.x <= this.tile_count - 1 && pos.y >= 0 && pos.y <= this.tile_count - 1)
+    }
+
+    objAtPos = function(board = null,pos)
+    {
+        if (board == null)
+            board = this.board
+        if (!this.validPos(pos)) return null
+        return board[pos.x][pos.y]
+    }
+
+    validMove = function(piece,move)
+    {
+        var valid = false
+        var valid_moves = piece.get_available_moves()
+        for (let i = 0; i < valid_moves.length; i++)
+        {
+            var valid_move = valid_moves[i]
+            if (valid_move.end.equals(move))
+                valid = valid_move
+        }
+        return valid
+    }
+
+    getMoveState = function(board = null,start,end)
+    {
+        if (board == null)
+            board = this.board
+        var piece = this.objAtPos(null,start)
+		var boardCopy = this.copy(board)
+        if (piece == null) return false;
+		var end_piece = this.objAtPos(board,end)
+        if (end_piece == null) return false;
+
+        // Need to copy the piece if the pos will be referenced in the state
+        var pieceCopy = piece 
+        if (pieceCopy != 0) //instance of object
+        {
+            pieceCopy = piece.copy(this)
+            pieceCopy.pos.x = end.x
+            pieceCopy.pos.y = end.y
+        }
+		boardCopy[start.x][start.y] = 0
+		boardCopy[end.x][end.y] = pieceCopy
+		return boardCopy
+    }
+	
+	move = function(move) // Boards are kept in move, pass those in here
+	{
+		var boardCopy = this.copy(move.board)
+		var start = move.piece.pos
+		var historyObj = new history(start.copy(),move.end.copy(),move.piece,this.copy(),boardCopy)
+		move.piece.pos = move.end
+
+		this.board = move.board
+		this.history.push(historyObj)
+        this.board[move.piece.pos.x][move.piece.pos.y].history.push(historyObj)
+		//move.piece.history.push(historyObj)
+        this.turn = this.turn == "white" ? "black" : "white"
+	}
+
+    posAttacking = function(board = null,pos,color) // if color is being attacked by opposite color => return true
+    {
+        var filter = color == "white" ? "black" : "white"
+        for (let i = 0; i < this.tile_count; i++)
+        {
+            for (let j = 0; j < this.tile_count; j++)
+            {
+                var tile = new point2D(i,j)
+                var piece = this.objAtPos(board,tile)
+                if (piece.color != filter) continue;
+                var moves = piece.attacking(board)
+                for (let k = 0; k < moves.length; k++)
+                {
+                    var move = moves[k]
+                    if (move.end.equals(pos))
+                        return true
+                }
+            }
+        }
+        return false
+    }
+	
+	check = function(board = null) //return white if white is in check
+	{
+        var result = []
+        if (board == null)
+            board = this.board
+		var kings = this.findPiece(board,"king")
+		for (let i = 0; i < kings.length; i++)
+		{
+			var king = kings[i]
+			//check attacking
+			var attacking = this.posAttacking(board,king.pos,king.color)
+			if (attacking)
+				result.push(king.color)
+		}
+        return result
+	}
+	
+	checkmate = function(board = null) // returns white if white is in checkmate
+	{
+        if (board == null)
+            board = this.board
+        // checkmate can only happen when a check has happened and there is no remaining moves
+        var inCheck = this.check(board)
+		if (inCheck.length == 0) return false
+        var pieces = this.findPiece(null,null,inCheck[0]) // the game moves wouldn't allow two check to be in place hence we can assume the first index will be the only
+        for (let i = 0; i < pieces.length;i++)
+        {
+            var piece = pieces[i]
+            var available_moves = piece.get_available_moves()
+            if (available_moves.length > 0) return false
+        }
+        return inCheck[0]
+	}
+
+    stalemate = function(board = null) // returns true if there are no available moves from either team
+	{
+        if (board == null)
+            board = this.board
+        // checkmate can only happen when a check has happened and there is no remaining moves
+        var pieces = this.findPiece()
+        for (let i = 0; i < pieces.length;i++)
+        {
+            var piece = pieces[i]
+            var available_moves = piece.get_available_moves()
+            if (available_moves.length > 0) return false
+        }
+        return true
+	}
+
+	findPiece(board = null,type = null,color = null) //return array of pieces in board of type for a particular color
+	{
+        if (board == null)
+            board = this.board
+		var result = []
+        for (let i = 0; i < this.tile_count; i++)
+        {
+            for (let j = 0; j < this.tile_count; j++)
+            {
+                var tile = new point2D(i,j)
+                var piece = this.objAtPos(board,tile)
+				if (typeof piece !== "object") continue;
+				if (color != null)
+					if (piece.color != color) continue;
+				if (type != null)
+					if (piece.__proto__.constructor.name != type) continue;
+				result.push(piece)
+            }
+        }
+		return result
+	}
+
+    getScore = function(board = null,color = null)
+    {
+        if (board == null)
+            board = this.board
+        var score = {
+            white: 0,
+            black: 0
+        }
+
+        for (let i = 0; i < this.tile_count; i++)
+        {
+            for (let j = 0; j < this.tile_count; j++)
+            {
+                var tile = new point2D(i,j)
+                var piece = this.objAtPos(board,tile)
+                if (piece == 0) continue
+                score[piece.color] += piece.score
+            }
+        }
+        if (color == null)
+            return score
+        else 
+            return score[color]
+    }
+}
+
+class Game
+{
+    constructor(aiColor = null)
+    {
+        this.tile_size = ((c.width / 8) + (c.height / 8)) / 2
+        this.state = new state()
+        this.selected = null
+        this.flipped = false
+        this.ai = aiColor != null ? new ai(this,aiColor):null
+    }
+
+    draw = function()
+    {
+        ctx.fillStyle = "white"
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'black';
+        var moves = []
+        if (this.selected != null && this.selected != 0) //Item is selected, show the move options
+            moves = this.selected.get_available_moves() || []
+        for (let i = 0; i < this.state.tile_count; i++)
+        {
+            for (let j = 0; j < this.state.tile_count; j++)
+            {
+                var tile = new point2D(i,j)
+                if (this.flipped)
+                    this.flip_point(tile)
+                var corner = this.tile_to_pos(tile)
+                if ((is_even(tile.x) && !is_even(tile.y) || (!is_even(tile.x) && is_even(tile.y))))
+                {
+                    ctx.fillStyle = "orange"
+                    ctx.fillRect(corner.x, corner.y, this.tile_size, this.tile_size);
+                }
+                var center = new point2D(corner.x + this.tile_size / 2,corner.y + this.tile_size / 2)
+                var piece_center = new point2D(corner.x + 20,corner.y + 20)
+                var hori = new point2D(corner.x + this.tile_size,corner.y)
+                var vert = new point2D(corner.x,corner.y + this.tile_size)
+
+                // grid lines
+                ctx.fillStyle = "black"
+                ctx.moveTo(corner.x, corner.y);
+                ctx.lineTo(hori.x, hori.y);
+                ctx.moveTo(corner.x, corner.y);
+                ctx.lineTo(vert.x, vert.y);
+
+                var piece = this.state.board[tile.x][tile.y]
+                if (piece != 0)
+                    piece.draw(piece_center)
+            }
+        }
+        
+        var radius = parseInt(this.tile_size / 8)
+        for (let k = 0; k < moves.length;k++)
+        {
+			var move = moves[k]
+            var tile = move.end
+            var corner = this.tile_to_pos(tile)
+            var center = new point2D(corner.x + this.tile_size / 2,corner.y + this.tile_size / 2)
+            ctx.moveTo(center.x, center.y);
+            ctx.arc(center.x, center.y, radius, 0, 2 * Math.PI, false);
+            ctx.fill()
+        }
+        ctx.stroke();
+    }
+
+    update = function(pos)
+    {
+        if (panelc.style.display != "") return;
+        var tile = this.pos_to_tile(pos)
+        if (this.flipped)
+            this.flip_point(tile)
+        var piece = this.state.objAtPos(null,tile)
+        console.log(`(x: ${tile.x},y: ${tile.y})`)
+		
+		var checkmate = this.state.checkmate()
+        if (!!checkmate) return confirm(checkmate + " Loses")
+        var stalemate = this.state.stalemate()
+        if (stalemate) return confirm("Draw: Stalemate");
+        if (this.selected == null || this.selected == 0 || (piece.color == this.selected.color && piece != this.selected)) // No piece has already been selected
+        {
+            if (piece != null && piece != 0)
+            {
+                var valid_moves = piece.get_available_moves() || []
+                if (valid_moves.length != 0)
+                    this.selected = piece
+            }
+        }
+        else // A piece has been selected, tile is the move attempt
+        {
+            if (piece == this.selected)
+            {
+                this.selected = null
+            }
+            else
+            {
+                if (piece == 0 || piece.color != this.selected.color) // Move to empty square or capture
+                {
+                    var move = this.state.validMove(this.selected,tile)
+                    if (!!move)
+                    {
+                        this.state.move(move)
+						if (move.promotion != null)
+                            move.promotion.show()
+						else
+							this.flip()
+                    }
+                    this.selected = null
+                }
+            }
+        }
+        this.draw()
+    }
+
+    centre = function(pos)
+    {
+        return new point2D(pos.x + this.tile_size/2,pos.y + this.tile_size/2)
+    }
+
+    tile_to_pos = function(tile)
+    {
+        var copy = tile.copy()
+        if (this.flipped)
+            this.flip_point(copy)
+        copy = copy.multiply(this.tile_size)
+        return copy
+    }
+
+    pos_to_tile = function(pos)
+    {
+        return new point2D(Math.floor(pos.x / this.tile_size),Math.floor(pos.y / this.tile_size))
+    }
+
+    reset_game = function()
+    {
+        this.state = new state()
+        this.draw()
+    }
+
+    flip = function()
+    {
+        this.flipped = !this.flipped
+        this.draw()
+    }
+
+    flip_point = function(point)
+    {
+        point.x = this.state.tile_count - point.x - 1
+        point.y = this.state.tile_count - point.y - 1
+    }
+}
+
+var c = document.getElementById("game");
+var ctx = c.getContext("2d");
+ctx.beginPath();
+c.addEventListener('click', function(event) {
+    var x = event.offsetX
+    var y = event.offsetY
+    var pos = new point2D(x,y)
+    game.update(pos)
+})
+
+
+
+var panelc = document.getElementById("promotion")
+var panelctx = panelc.getContext("2d");
+
+
+var game = new Game("black")
+
+game.draw()
+</script> 
+
+</body>
+</html>
